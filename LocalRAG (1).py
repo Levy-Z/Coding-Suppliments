@@ -33,14 +33,19 @@ def read_trading_books(books_path, num_books=None):
     print("READING TRADING BOOKS")
     extracted_data = []
 
+    original_dir = os.getcwd()
     os.chdir(books_path)
-    books_to_read = os.listdir(os.getcwd())[:num_books] if num_books else os.listdir(os.getcwd())
 
-    for book in books_to_read:
-        print(f"Loading: {book}")
-        loader = PyPDFLoader(book)
-        data = loader.load()
-        extracted_data.extend(data)
+    try:
+        books_to_read = os.listdir(os.getcwd())[:num_books] if num_books else os.listdir(os.getcwd())
+
+        for book in books_to_read:
+            print(f"Loading: {book}")
+            loader = PyPDFLoader(book)
+            data = loader.load()
+            extracted_data.extend(data)
+    finally:
+        os.chdir(original_dir)
 
     return [doc.page_content for doc in extracted_data]
 
@@ -65,7 +70,7 @@ def split_trading_books(book_texts, splitter=None):
     return chunks
 
 
-def get_embeddings(chunked_docs=None, embedder=None, use_gpu=False, only_return_embedder=False):
+def get_embeddings(chunked_docs=None, embedder=None, only_return_embedder=False):
     """
     Return the embedding model, and optionally embeddings for chunked docs.
     """
@@ -96,7 +101,7 @@ def get_vectorstore(chunked_data=None, save_path=None, load_path=None, embedder=
         return db_store
 
     print("CREATING VECTORSTORE")
-    embeddings_model, embeddings = get_embeddings(chunked_data, embedder)
+    embeddings_model, embeddings = get_embeddings(chunked_data, embedder=embedder)
     embeddings = np.array(embeddings)
 
     dim = embeddings.shape[1]
@@ -120,13 +125,11 @@ def get_vectorstore(chunked_data=None, save_path=None, load_path=None, embedder=
     return vectorstore
 
 
-def get_retreiver(db_store, k=5):
+def get_retriever(db_store, k=5):
     """
     Return retriever from FAISS vectorstore.
     """
-    return db_store.as_retriever(
-        search_kwargs={"k": k}
-    )
+    return db_store.as_retriever(search_kwargs={"k": k})
 
 
 def wrap_prompt_with_reasoning(system_prompt: str, mode: str = "concise_rationale") -> str:
@@ -136,7 +139,7 @@ def wrap_prompt_with_reasoning(system_prompt: str, mode: str = "concise_rational
     Modes:
         - direct: concise answer only
         - concise_rationale: short explanation + final answer + sources
-        - cot_verbose: more detailed step-by-step reasoning
+        - cot_verbose: detailed step-by-step reasoning
     """
     if mode not in SUPPORTED_REASONING_MODES:
         raise ValueError(
@@ -146,9 +149,9 @@ def wrap_prompt_with_reasoning(system_prompt: str, mode: str = "concise_rational
 
     common_rules = """
 Use the retrieved context as your primary source of evidence.
-If the context is insufficient, you may use general trading knowledge, but clearly label it as general knowledge.
-Do not fabricate citations or claim the context supports something it does not.
-If the answer is uncertain, say so explicitly.
+If the retrieved context is insufficient, you may use general trading knowledge, but clearly label it as general knowledge.
+Do not claim the context supports something unless it actually appears in the retrieved material.
+If the answer is uncertain or incomplete, state that explicitly.
 """
 
     if mode == "direct":
@@ -167,14 +170,14 @@ SOURCES:
     if mode == "cot_verbose":
         return system_prompt + common_rules + """
 
-Use a structured reasoning process before producing the answer.
+Use a structured reasoning process before giving the final answer.
 
 THOUGHT PROCESS:
 1. Understand the user's question.
 2. Identify the most relevant retrieved context.
 3. Connect the retrieved evidence to the question.
 4. Apply trading or quantitative finance knowledge only when necessary.
-5. Double-check assumptions, logic, or calculations.
+5. Double-check assumptions, calculations, or logic.
 6. Synthesize the conclusion.
 
 FINAL ANSWER:
@@ -254,6 +257,9 @@ def create_whole_pipeline(
     if vectorstore_load_path:
         vectorstore = get_vectorstore(load_path=vectorstore_load_path, embedder=embedder)
     else:
+        if documents_dir is None:
+            raise ValueError("documents_dir must be provided when vectorstore_load_path is not given.")
+
         data = read_trading_books(documents_dir)
         chunked = split_trading_books(data)
         vectorstore = get_vectorstore(
@@ -262,7 +268,7 @@ def create_whole_pipeline(
             embedder=embedder
         )
 
-    retreiver = get_retreiver(vectorstore, k=retriever_k)
+    retriever = get_retriever(vectorstore, k=retriever_k)
 
     prompt_with_context = system_prompt + "\n\nRetrieved Context:\n{context}"
     wrapped_prompt = wrap_prompt_with_reasoning(
@@ -271,7 +277,7 @@ def create_whole_pipeline(
     )
 
     rag_chain = create_rag_chain(
-        retreiver,
+        retriever,
         wrapped_prompt,
         llm=llm,
         llm_kwargs=llm_kwargs
@@ -287,7 +293,7 @@ Your role is to guide and assist traders by answering questions, evaluating stra
 and explaining whether a strategy appears profitable, reasonable, or risky.
 
 Prioritize the retrieved context when answering.
-When relevant, distinguish clearly between:
+When relevant, clearly distinguish between:
 1. information supported by retrieved context
 2. general knowledge from trading and investing
 """
