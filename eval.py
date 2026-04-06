@@ -9,22 +9,38 @@ from LocalRAG import create_whole_pipeline
 SYSTEM_PROMPT = ""
 TEXTBOOKS_FILEPATH = "/Users/sakethkoona/Documents/Finance VIP/VIP-GenAI/trading_books"
 
-def add_actual_outputs_to_dataset(data : pd.DataFrame):
-    rag_chain = create_whole_pipeline(
+def add_actual_outputs_to_dataset(data: pd.DataFrame): 
+    rag_chain_direct = create_whole_pipeline(
         system_prompt=SYSTEM_PROMPT,
         documents_dir=TEXTBOOKS_FILEPATH,
-        vectorstore_save_path="/Users/sakethkoona/Documents/Finance VIP/VIP-GenAI/"
+        vectorstore_save_path="/Users/sakethkoona/Documents/Finance VIP/VIP-GenAI/",
+        reasoning_mode="direct"
+    )
+
+    rag_chain_cot = create_whole_pipeline(
+        system_prompt=SYSTEM_PROMPT,
+        documents_dir=TEXTBOOKS_FILEPATH,
+        vectorstore_save_path="/Users/sakethkoona/Documents/Finance VIP/VIP-GenAI/",
+        reasoning_mode="concise_rationale"
     )
 
     def call_rag_chain(input_prompt):
-        response = rag_chain.invoke({
-            "input": input_prompt
-        })
-        return response['answer'], response['context']
+        res_direct = rag_chain_direct.invoke({"input": input_prompt})
+        res_cot = rag_chain_cot.invoke({"input": input_prompt})
 
-    data[["actual_output", "actual_retreived_context"]] = data["input"].apply(call_rag_chain).apply(pd.Series)
+        return (
+            res_direct["answer"],
+            res_cot["answer"],
+            [doc.page_content[:200] for doc in res_direct["retrieved_docs"]]
+        )
+
+    data[[
+        "direct_output",
+        "cot_output",
+        "retrieved_context"
+    ]] = data["input"].apply(call_rag_chain).apply(pd.Series)
+
     return data
-
 
 def create_dataset_from_csv(csv_filepath):
     dataset = EvaluationDataset()
